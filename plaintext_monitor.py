@@ -509,8 +509,25 @@ class App:
             if dlg.result:
                 self._suppress_until = time.time() + 0.6
                 set_plain_text(text)
+            else:
+                # User said No — suppress re-prompts for this clipboard content
+                # and flush any queued prompts for the same copy event.
+                self._suppress_until = time.time() + 2.0
+                self._flush_prompts()
         finally:
             self._dialog_open = False
+
+    def _flush_prompts(self) -> None:
+        """Discard all pending prompt items from the queue."""
+        try:
+            while True:
+                kind, _ = self._q.get_nowait()
+                if kind != "prompt":
+                    # Put non-prompt items back
+                    self._q.put((kind, _))
+                    break
+        except queue.Empty:
+            pass
 
     def _open_settings_window(self) -> None:
         SettingsDialog(self.root, self)

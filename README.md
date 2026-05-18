@@ -54,3 +54,9 @@ Settings are saved to `plaintext_settings.json` next to the script.
 
 1. Press `Win+R`, type `shell:startup`, press Enter
 2. Create a shortcut to `run.bat` in that folder
+---
+
+## More from VARØ Industries
+
+Free web apps, tools, and open-source projects → [varo.industries/apps](https://varo.industries/apps)
+

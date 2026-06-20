@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PlainText for Claude  —  v1.0
+PlainText for Claude  —  v1.2
 A system-tray app with a single job: squish multi-line / indented text
 (e.g. Claude AI output) into a single line with no indentation.
 
@@ -9,6 +9,9 @@ Hotkey (default Ctrl+Shift+L):
   - Strips leading/trailing whitespace from every line
   - Drops blank lines
   - Joins everything into one line and puts it back on the clipboard
+
+URL hotkey (default Ctrl+Shift+U):
+  - Same as above, but joins WITHOUT spaces — perfect for wrapped URLs
 
 Left-click the tray icon to squish whatever is on the clipboard instantly.
 
@@ -58,7 +61,8 @@ if _missing:
 # ── Win32 hotkey helpers ───────────────────────────────────────────────────────
 
 _WM_HOTKEY    = 0x0312
-_HOTKEY_ID    = 1
+_HOTKEY_ID_TEXT = 1
+_HOTKEY_ID_URL  = 2
 _MOD_NOREPEAT = 0x4000
 
 _MOD_MAP: dict[str, int] = {
@@ -134,24 +138,27 @@ def _send_ctrl_c() -> None:
 
 
 class _HotkeyThread(threading.Thread):
+    """Manages multiple RegisterHotKey bindings in a dedicated message-loop thread."""
     _WM_QUIT  = 0x0012
     _WM_USER  = 0x0400
-    _MSG_BIND = _WM_USER + 1
+    _MSG_REBIND = _WM_USER + 1
 
-    def __init__(self, callback, hk_str: str) -> None:
+    def __init__(self) -> None:
         super().__init__(daemon=True, name="HotkeyThread")
-        self._callback = callback
-        self._pending  = hk_str
-        self._current  = ""
+        self._bindings: dict[int, dict] = {}   # id -> {callback, pending, current}
         self._tid: int = 0
-        self._ready    = threading.Event()
+        self._ready = threading.Event()
+
+    def add(self, hk_id: int, callback, hk_str: str) -> None:
+        self._bindings[hk_id] = {"callback": callback, "pending": hk_str, "current": ""}
 
     def wait_ready(self) -> None:
         self._ready.wait()
 
-    def rebind(self, hk_str: str) -> None:
-        self._pending = hk_str
-        ctypes.windll.user32.PostThreadMessageW(self._tid, self._MSG_BIND, 0, 0)
+    def rebind(self, hk_id: int, hk_str: str) -> None:
+        if hk_id in self._bindings:
+            self._bindings[hk_id]["pending"] = hk_str
+        ctypes.windll.user32.PostThreadMessageW(self._tid, self._MSG_REBIND, hk_id, 0)
 
     def stop(self) -> None:
         ctypes.windll.user32.PostThreadMessageW(self._tid, self._WM_QUIT, 0, 0)
@@ -159,7 +166,8 @@ class _HotkeyThread(threading.Thread):
     def run(self) -> None:
         self._tid = ctypes.windll.kernel32.GetCurrentThreadId()
         self._ready.set()
-        self._do_bind(self._pending)
+        for hk_id in self._bindings:
+            self._do_bind(hk_id)
 
         msg = _MSG()
         user32 = ctypes.windll.user32
@@ -167,20 +175,24 @@ class _HotkeyThread(threading.Thread):
             result = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
             if result == 0 or result == -1:
                 break
-            if msg.message == _WM_HOTKEY and msg.wParam == _HOTKEY_ID:
-                self._callback()
-            elif msg.message == self._MSG_BIND:
-                self._do_bind(self._pending)
+            if msg.message == _WM_HOTKEY and msg.wParam in self._bindings:
+                self._bindings[msg.wParam]["callback"]()
+            elif msg.message == self._MSG_REBIND:
+                self._do_bind(msg.wParam)
 
-    def _do_bind(self, hk_str: str) -> None:
+    def _do_bind(self, hk_id: int) -> None:
+        b = self._bindings.get(hk_id)
+        if not b:
+            return
         user32 = ctypes.windll.user32
-        if self._current:
-            user32.UnregisterHotKey(None, _HOTKEY_ID)
-            self._current = ""
+        if b["current"]:
+            user32.UnregisterHotKey(None, hk_id)
+            b["current"] = ""
+        hk_str = b["pending"]
         if hk_str:
             mods, vk = _parse_hotkey(hk_str)
-            if vk and user32.RegisterHotKey(None, _HOTKEY_ID, mods, vk):
-                self._current = hk_str
+            if vk and user32.RegisterHotKey(None, hk_id, mods, vk):
+                b["current"] = hk_str
             elif vk:
                 print(f"[PlainText for Claude] Cannot register hotkey '{hk_str}'")
 
@@ -234,9 +246,15 @@ def set_plain_text(text: str) -> bool:
 
 
 def squish_text(text: str) -> str:
-    """Strip indentation from every line and collapse to a single line."""
+    """Strip indentation from every line and collapse to a single line (with spaces)."""
     parts = [line.strip() for line in text.splitlines()]
     return " ".join(p for p in parts if p)
+
+
+def squish_url(text: str) -> str:
+    """Strip indentation from every line and join with NO spaces — for wrapped URLs."""
+    parts = [line.strip() for line in text.splitlines()]
+    return "".join(p for p in parts if p)
 
 # ── Constants & defaults ───────────────────────────────────────────────────────
 
@@ -245,7 +263,8 @@ BASE_DIR      = os.path.dirname(os.path.abspath(sys.argv[0]))
 SETTINGS_FILE = os.path.join(BASE_DIR, "plaintext_claude_settings.json")
 
 DEFAULTS: dict = {
-    "hotkey": "ctrl+shift+l",
+    "hotkey":     "ctrl+shift+l",
+    "hotkey_url": "ctrl+shift+u",
 }
 
 # ── Windows startup (registry) helpers ────────────────────────────────────────
@@ -255,8 +274,8 @@ _STARTUP_REG_NAME = "PlainTextForClaude"
 
 
 def _startup_target() -> str:
-    """Command stored in the registry — run_claude.bat beside this script."""
-    bat = os.path.join(BASE_DIR, "run_claude.bat")
+    """Command stored in the registry — run.bat beside this script."""
+    bat = os.path.join(BASE_DIR, "run.bat")
     return f'"{bat}"'
 
 
@@ -364,22 +383,29 @@ class SettingsDialog(tk.Toplevel):
         ttk.Checkbutton(sf, text="Start with Windows",
                         variable=self.startup_var).pack(anchor="w")
 
-        # ── Hotkey ─────────────────────────────────────────────────────────
-        hf = ttk.LabelFrame(outer, text=" Hotkey ", padding=(12, 8))
+        # ── Hotkeys ────────────────────────────────────────────────────────
+        hf = ttk.LabelFrame(outer, text=" Hotkeys ", padding=(12, 8))
         hf.pack(fill=tk.X, pady=(0, 14))
 
-        row = ttk.Frame(hf)
-        row.pack(fill=tk.X)
-        ttk.Label(row, text="Hotkey:").pack(side=tk.LEFT)
+        row1 = ttk.Frame(hf)
+        row1.pack(fill=tk.X)
+        ttk.Label(row1, text="Squish text:").pack(side=tk.LEFT)
         self.hotkey_var = tk.StringVar(value=s.get("hotkey"))
-        ttk.Entry(row, textvariable=self.hotkey_var, width=26).pack(
+        ttk.Entry(row1, textvariable=self.hotkey_var, width=22).pack(
+            side=tk.LEFT, padx=(8, 0))
+
+        row2 = ttk.Frame(hf)
+        row2.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(row2, text="Squish URL:").pack(side=tk.LEFT)
+        self.hotkey_url_var = tk.StringVar(value=s.get("hotkey_url"))
+        ttk.Entry(row2, textvariable=self.hotkey_url_var, width=22).pack(
             side=tk.LEFT, padx=(8, 0))
 
         ttk.Label(
             hf,
-            text="Select text, press hotkey: copies + squishes to one line.\n"
-                 "Or click the tray icon to squish whatever is on the clipboard.\n"
-                 "Examples:  ctrl+shift+l   ctrl+alt+l   alt+shift+l",
+            text="Text: joins lines with spaces.  URL: joins with no spaces.\n"
+                 "Or click the tray icon to squish text on the clipboard.\n"
+                 "Examples:  ctrl+shift+l   ctrl+alt+l   alt+shift+u",
             foreground="gray",
             justify=tk.LEFT,
         ).pack(anchor="w", pady=(6, 0))
@@ -403,11 +429,15 @@ class SettingsDialog(tk.Toplevel):
         self.geometry(f"+{(sw - w) // 2}+{(sh - h) // 2}")
 
     def _save(self) -> None:
-        old_hk = self.app.settings.get("hotkey")
-        new_hk = self.hotkey_var.get().strip()
-        self.app.settings.set("hotkey", new_hk)
+        old_hk     = self.app.settings.get("hotkey")
+        old_hk_url = self.app.settings.get("hotkey_url")
+        new_hk     = self.hotkey_var.get().strip()
+        new_hk_url = self.hotkey_url_var.get().strip()
+        self.app.settings.update({"hotkey": new_hk, "hotkey_url": new_hk_url})
         if old_hk != new_hk:
-            self.app.rebind_hotkey(old_hk, new_hk)
+            self.app._hotkey_thread.rebind(_HOTKEY_ID_TEXT, new_hk)
+        if old_hk_url != new_hk_url:
+            self.app._hotkey_thread.rebind(_HOTKEY_ID_URL, new_hk_url)
         _set_startup(self.startup_var.get())
         self.destroy()
 
@@ -431,9 +461,16 @@ class App:
 
         self.root.after(120, self._drain)
 
-        self._hotkey_thread = _HotkeyThread(
+        self._hotkey_thread = _HotkeyThread()
+        self._hotkey_thread.add(
+            _HOTKEY_ID_TEXT,
             lambda: self.root.after(0, self._hotkey_triggered),
             self.settings.get("hotkey"),
+        )
+        self._hotkey_thread.add(
+            _HOTKEY_ID_URL,
+            lambda: self.root.after(0, self._hotkey_url_triggered),
+            self.settings.get("hotkey_url"),
         )
         self._hotkey_thread.start()
         self._hotkey_thread.wait_ready()
@@ -442,10 +479,8 @@ class App:
             target=self._run_tray, daemon=True, name="TrayThread"
         ).start()
 
-    def rebind_hotkey(self, old: str, new: str) -> None:
-        self._hotkey_thread.rebind(new)
-
-    def _hotkey_triggered(self) -> None:
+    def _copy_and_process(self, processor) -> None:
+        """Simulate Ctrl+C, wait for clipboard, then run processor on the text."""
         self._suppress_until = time.time() + 1.5
         before = clip_seq()
         _send_ctrl_c()
@@ -458,14 +493,28 @@ class App:
 
         text = get_plain_text()
         if text:
-            squished = squish_text(text)
-            if squished:
-                set_plain_text(squished)
+            result = processor(text)
+            if result:
+                set_plain_text(result)
+
+    def _hotkey_triggered(self) -> None:
+        self._copy_and_process(squish_text)
+
+    def _hotkey_url_triggered(self) -> None:
+        self._copy_and_process(squish_url)
 
     def _squish_now(self) -> None:
         text = get_plain_text()
         if text:
             squished = squish_text(text)
+            if squished:
+                self._suppress_until = time.time() + 0.6
+                set_plain_text(squished)
+
+    def _squish_url_now(self) -> None:
+        text = get_plain_text()
+        if text:
+            squished = squish_url(text)
             if squished:
                 self._suppress_until = time.time() + 0.6
                 set_plain_text(squished)
@@ -487,13 +536,17 @@ class App:
                 lambda icon, item: self._squish_now(),
                 default=True,
             ),
+            pystray.MenuItem(
+                "Squish URL (no spaces)",
+                lambda icon, item: self._squish_url_now(),
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                "Resume" if self._paused else "Pause  (hotkey only)",
+                "Resume" if self._paused else "Pause  (hotkeys only)",
                 self._toggle_pause,
             ),
             pystray.MenuItem(
-                "Settings…",
+                "Settings\u2026",
                 lambda icon, item: self._q.put(("settings", None)),
             ),
             pystray.Menu.SEPARATOR,
@@ -512,9 +565,11 @@ class App:
     def _toggle_pause(self, icon=None, item=None) -> None:
         self._paused = not self._paused
         if self._paused:
-            self._hotkey_thread.rebind("")
+            self._hotkey_thread.rebind(_HOTKEY_ID_TEXT, "")
+            self._hotkey_thread.rebind(_HOTKEY_ID_URL, "")
         else:
-            self._hotkey_thread.rebind(self.settings.get("hotkey"))
+            self._hotkey_thread.rebind(_HOTKEY_ID_TEXT, self.settings.get("hotkey"))
+            self._hotkey_thread.rebind(_HOTKEY_ID_URL, self.settings.get("hotkey_url"))
         if self._tray:
             self._tray.icon = make_icon(self._paused)
             self._tray.menu = self._make_menu()

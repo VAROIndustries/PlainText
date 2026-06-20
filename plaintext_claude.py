@@ -10,6 +10,8 @@ Hotkey (default Ctrl+Shift+L):
   - Drops blank lines
   - Joins everything into one line and puts it back on the clipboard
 
+Left-click the tray icon to squish whatever is on the clipboard instantly.
+
 Requirements:  pip install pywin32 pystray Pillow
 """
 from __future__ import annotations
@@ -22,6 +24,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import winreg
 from tkinter import ttk
 
 # ── Graceful import check ──────────────────────────────────────────────────────
@@ -245,6 +248,42 @@ DEFAULTS: dict = {
     "hotkey": "ctrl+shift+l",
 }
 
+# ── Windows startup (registry) helpers ────────────────────────────────────────
+
+_STARTUP_REG_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_STARTUP_REG_NAME = "PlainTextForClaude"
+
+
+def _startup_target() -> str:
+    """Command stored in the registry — run_claude.bat beside this script."""
+    bat = os.path.join(BASE_DIR, "run_claude.bat")
+    return f'"{bat}"'
+
+
+def _startup_enabled() -> bool:
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _STARTUP_REG_KEY)
+        winreg.QueryValueEx(key, _STARTUP_REG_NAME)
+        winreg.CloseKey(key)
+        return True
+    except OSError:
+        return False
+
+
+def _set_startup(enabled: bool) -> None:
+    key = winreg.OpenKey(
+        winreg.HKEY_CURRENT_USER, _STARTUP_REG_KEY,
+        access=winreg.KEY_SET_VALUE,
+    )
+    if enabled:
+        winreg.SetValueEx(key, _STARTUP_REG_NAME, 0, winreg.REG_SZ, _startup_target())
+    else:
+        try:
+            winreg.DeleteValue(key, _STARTUP_REG_NAME)
+        except OSError:
+            pass
+    winreg.CloseKey(key)
+
 # ── Settings ───────────────────────────────────────────────────────────────────
 
 class Settings:
@@ -317,6 +356,15 @@ class SettingsDialog(tk.Toplevel):
                   font=("Segoe UI", 9),
                   foreground="gray").pack(anchor="w", pady=(0, 12))
 
+        # ── Startup ─────────────────────────────────────────────────────────
+        sf = ttk.LabelFrame(outer, text=" Startup ", padding=(12, 8))
+        sf.pack(fill=tk.X, pady=(0, 10))
+
+        self.startup_var = tk.BooleanVar(value=_startup_enabled())
+        ttk.Checkbutton(sf, text="Start with Windows",
+                        variable=self.startup_var).pack(anchor="w")
+
+        # ── Hotkey ─────────────────────────────────────────────────────────
         hf = ttk.LabelFrame(outer, text=" Hotkey ", padding=(12, 8))
         hf.pack(fill=tk.X, pady=(0, 14))
 
@@ -330,7 +378,7 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(
             hf,
             text="Select text, press hotkey: copies + squishes to one line.\n"
-                 "Or use tray menu to squish whatever is already on the clipboard.\n"
+                 "Or click the tray icon to squish whatever is on the clipboard.\n"
                  "Examples:  ctrl+shift+l   ctrl+alt+l   alt+shift+l",
             foreground="gray",
             justify=tk.LEFT,
@@ -360,6 +408,7 @@ class SettingsDialog(tk.Toplevel):
         self.app.settings.set("hotkey", new_hk)
         if old_hk != new_hk:
             self.app.rebind_hotkey(old_hk, new_hk)
+        _set_startup(self.startup_var.get())
         self.destroy()
 
 # ── Application ────────────────────────────────────────────────────────────────
@@ -436,6 +485,7 @@ class App:
             pystray.MenuItem(
                 "Squish Clipboard to One Line",
                 lambda icon, item: self._squish_now(),
+                default=True,
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(

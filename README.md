@@ -108,4 +108,4 @@ Each line of the clipboard text is stripped of leading/trailing whitespace. Blan
 
 ## More from VARØ Industries
 
-Free web apps, tools, and open-source projects → [varo.industries/apps](https://varo.industries/apps)
+Free web apps, tools, and open-source projects → [varo.industries/apps](https://varo.industries/apps#github)

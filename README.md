@@ -1,5 +1,8 @@
 # PlainText — Clipboard Utilities for Windows
 
+**🌐 Tool page: [varo.industries/tools/plaintext](https://varo.industries/tools/plaintext)** — features, screenshots, install, and FAQ.
+
+
 Two lightweight system-tray apps that clean up clipboard text on Windows.
 
 ---

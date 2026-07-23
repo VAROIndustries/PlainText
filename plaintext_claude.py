@@ -27,8 +27,15 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 import winreg
 from tkinter import ttk
+
+# Give this process a unique identity so Windows separates it from other Python apps
+# in the notification area (system tray) and taskbar
+ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+    "VAROIndustries.PlainTextForClaude"
+)
 
 # ── Graceful import check ──────────────────────────────────────────────────────
 _missing: list[str] = []
@@ -259,6 +266,10 @@ def squish_url(text: str) -> str:
 # ── Constants & defaults ───────────────────────────────────────────────────────
 
 APP_NAME      = "PlainText for Claude"
+APP_VERSION   = "1.2"
+TAGLINE       = "Squish multi-line Claude output into one clean line."
+APPS_URL      = "https://varo.industries/apps#github"
+GITHUB_URL    = "https://github.com/VAROIndustries/PlainText"
 BASE_DIR      = os.path.dirname(os.path.abspath(sys.argv[0]))
 SETTINGS_FILE = os.path.join(BASE_DIR, "plaintext_claude_settings.json")
 
@@ -274,9 +285,9 @@ _STARTUP_REG_NAME = "PlainTextForClaude"
 
 
 def _startup_target() -> str:
-    """Command stored in the registry — run.bat beside this script."""
-    bat = os.path.join(BASE_DIR, "run.bat")
-    return f'"{bat}"'
+    """Command stored in the registry — the .exe beside this script."""
+    exe = os.path.join(BASE_DIR, "PlainTextForClaude.exe")
+    return f'"{exe}"'
 
 
 def _startup_enabled() -> bool:
@@ -441,6 +452,48 @@ class SettingsDialog(tk.Toplevel):
         _set_startup(self.startup_var.get())
         self.destroy()
 
+# ── About dialog ───────────────────────────────────────────────────────────────
+
+class AboutDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Tk) -> None:
+        super().__init__(parent)
+        self.title(f"About {APP_NAME}")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+        pad = ttk.Frame(self, padding=(24, 18))
+        pad.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(pad, text=APP_NAME, font=("Segoe UI", 16, "bold")).pack()
+        tk.Label(pad, text=f"Version {APP_VERSION}", fg="#555").pack(pady=(2, 0))
+        tk.Label(pad, text=TAGLINE, fg="#333").pack(pady=(6, 12))
+
+        self._link(pad, "varo.industries/apps", APPS_URL)
+        self._link(pad, "github.com/VAROIndustries/PlainText", GITHUB_URL)
+
+        tk.Label(pad, text="© 2026 VARØ Industries", fg="#888").pack(
+            pady=(12, 10))
+        ttk.Button(pad, text="Close", width=10, command=self.destroy).pack()
+
+        self._center()
+        self.grab_set()
+        self.lift()
+        self.wait_window()
+
+    @staticmethod
+    def _link(parent, text, url) -> None:
+        lbl = tk.Label(parent, text=text, fg="#1a6ec8", cursor="hand2",
+                       font=("Segoe UI", 9, "underline"))
+        lbl.pack()
+        lbl.bind("<Button-1>", lambda e: webbrowser.open(url))
+
+    def _center(self) -> None:
+        self.update_idletasks()
+        w, h   = self.winfo_reqwidth(), self.winfo_reqheight()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"+{(sw - w) // 2}+{(sh - h) // 2}")
+
 # ── Application ────────────────────────────────────────────────────────────────
 
 class App:
@@ -525,6 +578,8 @@ class App:
                 kind, _ = self._q.get_nowait()
                 if kind == "settings":
                     SettingsDialog(self.root, self)
+                elif kind == "about":
+                    AboutDialog(self.root)
         except queue.Empty:
             pass
         self.root.after(120, self._drain)
@@ -548,6 +603,10 @@ class App:
             pystray.MenuItem(
                 "Settings\u2026",
                 lambda icon, item: self._q.put(("settings", None)),
+            ),
+            pystray.MenuItem(
+                "About\u2026",
+                lambda icon, item: self._q.put(("about", None)),
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self._quit),

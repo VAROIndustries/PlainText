@@ -1,3 +1,3 @@
 @echo off
-:: PlainText Monitor launcher — runs without a console window
-start "" pythonw "%~dp0plaintext_monitor.py"
+:: PlainText Monitor launcher
+start "" "%~dp0PlainTextMonitor.exe"

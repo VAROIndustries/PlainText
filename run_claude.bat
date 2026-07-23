@@ -1,3 +1,3 @@
 @echo off
-cd /d "%~dp0"
-start "" pythonw plaintext_claude.py
+:: PlainText for Claude launcher
+start "" "%~dp0PlainTextForClaude.exe"
